@@ -226,6 +226,10 @@ class AgentSession:
                 except json.JSONDecodeError:
                     parsed_json = False
             if required.get(name) and not parsed_json:
+                fallback_call = self._fallback_tool_call_from_context(name)
+                if fallback_call:
+                    parsed.append(fallback_call)
+                    return parsed
                 args = self._infer_missing_args(name)
                 if not args:
                     continue
@@ -301,11 +305,22 @@ class AgentSession:
         if name not in {"read_file", "write_file", "write_python_launcher", "write_python_requirements", "render_template"}:
             return {}
         user_text = self._recent_user_text().lower()
+        if name == "read_file" and any(word in user_text for word in ("flask", "api", "chat")):
+            app_path = self.tool_ctx.cwd / "app.py"
+            if app_path.is_file():
+                return {"path": "app.py"}
         if name == "render_template" and "flask" in user_text and "chat" in user_text:
+            variables: dict[str, Any] = {"host": "0.0.0.0", "port": 5000, "debug": True}
+            if "history" in user_text:
+                variables["history"] = True
+            if "models" in user_text or "model" in user_text:
+                variables["models"] = True
+            if "request_id" in user_text or "request id" in user_text:
+                variables["request_id"] = True
             return {
                 "template": "flask_chat_api",
                 "path": "app.py",
-                "variables": {"host": "0.0.0.0", "port": 5000, "debug": True},
+                "variables": variables,
             }
         if name == "render_template" and ".gitignore" in user_text and "python" in user_text:
             return {"template": "python_gitignore", "path": ".gitignore", "variables": {}}
@@ -351,6 +366,22 @@ class AgentSession:
                     args["requirements_path"] = "requirements.txt"
             return args
         return {}
+
+    def _fallback_tool_call_from_context(self, requested_name: str) -> dict[str, Any] | None:
+        user_text = self._recent_user_text().lower()
+        if requested_name in {"replace_text", "write_file"} and "flask" in user_text and "chat" in user_text:
+            variables: dict[str, Any] = {"host": "0.0.0.0", "port": 5000, "debug": True}
+            if "history" in user_text:
+                variables["history"] = True
+            if "models" in user_text or "model" in user_text:
+                variables["models"] = True
+            if "request_id" in user_text or "request id" in user_text:
+                variables["request_id"] = True
+            return _local_tool_call(
+                "render_template",
+                {"template": "flask_chat_api", "path": "app.py", "variables": variables},
+            )
+        return None
 
     def _tool_path_arg(self, path: Path) -> str:
         resolved = path.resolve()

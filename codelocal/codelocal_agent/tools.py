@@ -23,6 +23,9 @@ TEMPLATES = {
             "host": "0.0.0.0",
             "port": 5000,
             "debug": True,
+            "history": False,
+            "models": False,
+            "request_id": False,
         },
     },
     "python_gitignore": {
@@ -557,6 +560,14 @@ def _template_content(template_name: str, variables: dict[str, Any]) -> str:
         host = variables.get("host") or "0.0.0.0"
         port = int(variables.get("port") or 5000)
         debug = bool(variables.get("debug", True))
+        if bool(variables.get("history", False)):
+            return _flask_chat_api_history_template(
+                host=host,
+                port=port,
+                debug=debug,
+                models=bool(variables.get("models", False)),
+                request_id=bool(variables.get("request_id", False)),
+            )
         return _flask_chat_api_template(host=host, port=port, debug=debug)
     if template_name == "python_gitignore":
         return _python_gitignore_template()
@@ -564,6 +575,7 @@ def _template_content(template_name: str, variables: dict[str, Any]) -> str:
 
 
 def _flask_chat_api_template(host: str, port: int, debug: bool) -> str:
+    # Backward-compatible default: the minimal echo API.
     content = (
         "from flask import Flask, jsonify, request\n"
         "\n"
@@ -592,6 +604,72 @@ def _flask_chat_api_template(host: str, port: int, debug: bool) -> str:
         f"    app.run(host={host!r}, port={port}, debug={debug!r})\n"
     )
     return content
+
+
+def _flask_chat_api_history_template(host: str, port: int, debug: bool, models: bool, request_id: bool) -> str:
+    imports = "from flask import Flask, jsonify, request\n"
+    if request_id:
+        imports += "from uuid import uuid4\n"
+    models_block = ""
+    if models:
+        models_block = (
+            "\n"
+            "\n"
+            "@app.get(\"/models\")\n"
+            "def models():\n"
+            "    return jsonify({\"data\": [{\"id\": \"local-echo\", \"object\": \"model\"}]})\n"
+        )
+    request_id_line = "    request_id = str(uuid4())\n" if request_id else ""
+    request_id_response = "        \"request_id\": request_id,\n" if request_id else ""
+    return (
+        f"{imports}"
+        "\n"
+        "app = Flask(__name__)\n"
+        "chat_history = []\n"
+        "\n"
+        "\n"
+        "@app.get(\"/health\")\n"
+        "def health():\n"
+        "    return jsonify({\"status\": \"ok\"})\n"
+        f"{models_block}"
+        "\n"
+        "\n"
+        "@app.get(\"/history\")\n"
+        "def get_history():\n"
+        "    return jsonify({\"history\": chat_history})\n"
+        "\n"
+        "\n"
+        "@app.delete(\"/history\")\n"
+        "def clear_history():\n"
+        "    chat_history.clear()\n"
+        "    return jsonify({\"cleared\": True})\n"
+        "\n"
+        "\n"
+        "@app.post(\"/chat\")\n"
+        "def chat():\n"
+        "    data = request.get_json(silent=True)\n"
+        "    if not isinstance(data, dict):\n"
+        "        return jsonify({\"error\": \"Request body must be a JSON object.\"}), 400\n"
+        "\n"
+        "    message = data.get(\"message\")\n"
+        "    if not isinstance(message, str) or not message.strip():\n"
+        "        return jsonify({\"error\": \"Field 'message' must be a non-empty string.\"}), 400\n"
+        "\n"
+        f"{request_id_line}"
+        "    reply = f\"Echo: {message}\"\n"
+        "    chat_history.append({\"role\": \"user\", \"content\": message})\n"
+        "    chat_history.append({\"role\": \"assistant\", \"content\": reply})\n"
+        "\n"
+        "    return jsonify({\n"
+        "        \"reply\": reply,\n"
+        f"{request_id_response}"
+        "        \"message_count\": len(chat_history),\n"
+        "    })\n"
+        "\n"
+        "\n"
+        "if __name__ == \"__main__\":\n"
+        f"    app.run(host={host!r}, port={port}, debug={debug!r})\n"
+    )
 
 
 def _python_gitignore_template() -> str:
