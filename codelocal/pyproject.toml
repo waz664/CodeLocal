@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codelocal-agent"
+version = "0.1.0"
+description = "A local OpenAI-compatible coding/task assistant CLI."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+codelocal = "codelocal_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
