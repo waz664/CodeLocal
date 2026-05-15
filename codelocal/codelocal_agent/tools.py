@@ -210,6 +210,7 @@ def tool_schemas() -> list[dict[str, Any]]:
                         "target": {"type": "string", "default": "app.py"},
                         "install_requirements": {"type": "boolean", "default": False},
                         "requirements_path": {"type": "string", "default": "requirements.txt"},
+                        "venv_path": {"type": "string", "default": ".venv"},
                     },
                     "required": ["path"],
                 },
@@ -230,6 +231,22 @@ def tool_schemas() -> list[dict[str, Any]]:
                         },
                     },
                     "required": ["packages"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write_flask_chat_api",
+                "description": "Create or replace a simple Flask app.py with GET /health and POST /chat echo endpoint. Requires approval unless approval mode is auto.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "default": "app.py"},
+                        "host": {"type": "string", "default": "0.0.0.0"},
+                        "port": {"type": "integer", "default": 5000},
+                        "debug": {"type": "boolean", "default": True},
+                    },
                 },
             },
         },
@@ -342,6 +359,9 @@ def execute_tool(ctx: ToolContext, name: str, args: dict[str, Any]) -> ToolResul
         if name == "write_python_requirements":
             ctx.require_approval(name, args)
             return ToolResult(True, _write_python_requirements(ctx, args))
+        if name == "write_flask_chat_api":
+            ctx.require_approval(name, args)
+            return ToolResult(True, _write_flask_chat_api(ctx, args))
         if name == "replace_text":
             ctx.require_approval(name, args)
             return ToolResult(True, _replace_text(ctx, args))
@@ -438,11 +458,16 @@ def _write_python_launcher(ctx: ToolContext, args: dict[str, Any]) -> str:
     path = ctx.resolve_path(args["path"])
     target = args.get("target") or "app.py"
     requirements_path = args.get("requirements_path") or "requirements.txt"
+    venv_path = args.get("venv_path") or ".venv"
     install_requirements = bool(args.get("install_requirements", False))
     install_block = ""
     if install_requirements:
         install_block = (
             f"if [ -f {shlex.quote(str(requirements_path))} ]; then\n"
+            f"    if [ ! -x {shlex.quote(str(venv_path))}/bin/python ]; then\n"
+            f"        \"$PYTHON_BIN\" -m venv {shlex.quote(str(venv_path))}\n"
+            "    fi\n"
+            f"    PYTHON_BIN={shlex.quote(str(venv_path))}/bin/python\n"
             f"    \"$PYTHON_BIN\" -m pip install -r {shlex.quote(str(requirements_path))}\n"
             "fi\n"
             "\n"
@@ -472,6 +497,7 @@ def _write_python_launcher(ctx: ToolContext, args: dict[str, Any]) -> str:
             "target": target,
             "install_requirements": install_requirements,
             "requirements_path": requirements_path,
+            "venv_path": venv_path if install_requirements else None,
             "executable": True,
         }
     )
@@ -492,6 +518,43 @@ def _write_python_requirements(ctx: ToolContext, args: dict[str, Any]) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(normalized) + "\n", encoding="utf-8")
     return as_json({"written": str(path), "packages": normalized})
+
+
+def _write_flask_chat_api(ctx: ToolContext, args: dict[str, Any]) -> str:
+    path = ctx.resolve_path(args.get("path") or "app.py")
+    host = args.get("host") or "0.0.0.0"
+    port = int(args.get("port") or 5000)
+    debug = bool(args.get("debug", True))
+    content = (
+        "from flask import Flask, jsonify, request\n"
+        "\n"
+        "app = Flask(__name__)\n"
+        "\n"
+        "\n"
+        "@app.get(\"/health\")\n"
+        "def health():\n"
+        "    return jsonify({\"status\": \"ok\"})\n"
+        "\n"
+        "\n"
+        "@app.post(\"/chat\")\n"
+        "def chat():\n"
+        "    data = request.get_json(silent=True)\n"
+        "    if not isinstance(data, dict):\n"
+        "        return jsonify({\"error\": \"Request body must be a JSON object.\"}), 400\n"
+        "\n"
+        "    message = data.get(\"message\")\n"
+        "    if not isinstance(message, str) or not message.strip():\n"
+        "        return jsonify({\"error\": \"Field 'message' must be a non-empty string.\"}), 400\n"
+        "\n"
+        "    return jsonify({\"reply\": f\"Echo: {message}\"})\n"
+        "\n"
+        "\n"
+        "if __name__ == \"__main__\":\n"
+        f"    app.run(host={host!r}, port={port}, debug={debug!r})\n"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return as_json({"written": str(path), "host": host, "port": port, "debug": debug})
 
 
 def _replace_text(ctx: ToolContext, args: dict[str, Any]) -> str:

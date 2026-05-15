@@ -67,6 +67,7 @@ The model can call tools to:
 - create directories
 - create Python launcher scripts
 - create Python requirements files
+- create a simple Flask chat API
 - replace exact text
 - search text
 - find files
