@@ -78,7 +78,8 @@ class ToolContext:
     def resolve_path(self, raw_path: str | None) -> Path:
         if not raw_path:
             return self.cwd
-        path = Path(os.path.expanduser(raw_path))
+        expanded = os.path.expanduser(raw_path)
+        path = Path(expanded)
         if not path.is_absolute():
             path = self.cwd / path
         resolved = path.resolve()
@@ -90,6 +91,15 @@ class ToolContext:
                     f"Path is outside the workspace root: {resolved}. "
                     "Use /set allow_outside_root true if you want to allow this."
                 ) from exc
+        raw_candidate = Path(expanded)
+        if (
+            not resolved.exists()
+            and not raw_candidate.is_absolute()
+            and raw_candidate.parent == Path(".")
+        ):
+            matches = sorted({candidate.resolve() for candidate in self.root.rglob(raw_candidate.name)})
+            if len(matches) == 1:
+                return matches[0]
         return resolved
 
     def require_approval(self, tool_name: str, args: dict[str, Any]) -> None:
@@ -184,6 +194,21 @@ def tool_schemas() -> list[dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write_python_launcher",
+                "description": "Create or replace a POSIX run script that selects python3 if available, otherwise python, then runs a target script. Requires approval unless approval mode is auto.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "target": {"type": "string", "default": "app.py"},
+                    },
                     "required": ["path"],
                 },
             },
@@ -291,6 +316,9 @@ def execute_tool(ctx: ToolContext, name: str, args: dict[str, Any]) -> ToolResul
         if name == "make_dir":
             ctx.require_approval(name, args)
             return ToolResult(True, _make_dir(ctx, args))
+        if name == "write_python_launcher":
+            ctx.require_approval(name, args)
+            return ToolResult(True, _write_python_launcher(ctx, args))
         if name == "replace_text":
             ctx.require_approval(name, args)
             return ToolResult(True, _replace_text(ctx, args))
@@ -381,6 +409,30 @@ def _make_dir(ctx: ToolContext, args: dict[str, Any]) -> str:
     path = ctx.resolve_path(args["path"])
     path.mkdir(parents=True, exist_ok=True)
     return as_json({"created": str(path), "exists": path.is_dir()})
+
+
+def _write_python_launcher(ctx: ToolContext, args: dict[str, Any]) -> str:
+    path = ctx.resolve_path(args["path"])
+    target = args.get("target") or "app.py"
+    content = (
+        "#!/usr/bin/env bash\n"
+        "set -e\n"
+        "\n"
+        "if command -v python3 >/dev/null 2>&1; then\n"
+        "    PYTHON_BIN=python3\n"
+        "elif command -v python >/dev/null 2>&1; then\n"
+        "    PYTHON_BIN=python\n"
+        "else\n"
+        "    echo \"Python not found. Please install Python 3.\" >&2\n"
+        "    exit 1\n"
+        "fi\n"
+        "\n"
+        f"exec \"$PYTHON_BIN\" {shlex.quote(str(target))} \"$@\"\n"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(path.stat().st_mode | 0o755)
+    return as_json({"written": str(path), "target": target, "executable": True})
 
 
 def _replace_text(ctx: ToolContext, args: dict[str, Any]) -> str:

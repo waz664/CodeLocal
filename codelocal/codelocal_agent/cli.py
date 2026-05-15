@@ -26,6 +26,8 @@ You are connected to a local model, so be disciplined:
 - For shell commands, explain why the command is needed in one short sentence before calling the tool.
 - For Windows tasks, use PowerShell-friendly commands when the environment is Windows.
 - For Linux tasks, use POSIX shell commands when possible.
+- For Linux Python launcher scripts, detect Python with `command -v python3 >/dev/null 2>&1` first, then `command -v python >/dev/null 2>&1`; store the chosen command in a variable and execute it.
+- Use write_python_launcher when asked to create or modify run.sh so it automatically chooses python3 or python.
 - Do not claim you changed or tested something unless a tool result confirms it.
 - If a command fails, inspect the error and adjust once or twice; then explain the blocker.
 - Avoid repeated tool calls with the same arguments unless the state has changed.
@@ -36,6 +38,7 @@ Tool rules:
 - read_file output includes line numbers; use exact text with replace_text.
 - write_file and replace_text modify files.
 - make_dir creates directories.
+- write_python_launcher creates executable Python run scripts.
 - run_command executes in the current working directory.
 - git_status is safe for checking repo state before and after edits.
 - change_dir changes only the agent working directory, not the user's shell.
@@ -109,6 +112,21 @@ class AgentSession:
             if not tool_calls and content:
                 tool_calls = self._tool_calls_from_text(content)
 
+            if not tool_calls and content and self._looks_like_incomplete_tool_call(content):
+                if self.config.show_tool_io:
+                    print(f"\n[assistant incomplete tool request] {content[:1000]}")
+                self.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous tool request was missing required JSON arguments. "
+                            "Call the same tool again with complete JSON arguments. "
+                            "For example: functions.read_file: {\"path\": \"relative/file\"}"
+                        ),
+                    }
+                )
+                continue
+
             if content and not tool_calls:
                 print(content)
 
@@ -160,11 +178,18 @@ class AgentSession:
                 )
         print(f"Stopped after {self.config.max_turns} tool turns. The task may be incomplete.")
 
+    def clear(self) -> None:
+        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
     def _tool_calls_from_text(self, content: str) -> list[dict[str, Any]]:
         names = {tool["function"]["name"] for tool in self.tools}
+        required = {
+            tool["function"]["name"]: set(tool["function"].get("parameters", {}).get("required", []))
+            for tool in self.tools
+        }
         parsed: list[dict[str, Any]] = []
         normalized = content
-        for _ in range(5):
+        for _ in range(8):
             unescaped = html.unescape(normalized)
             if unescaped == normalized:
                 break
@@ -178,20 +203,28 @@ class AgentSession:
         if parsed:
             return parsed
 
-        json_decoder = json.JSONDecoder()
+        json_decoder = json.JSONDecoder(strict=False)
         for match in re.finditer(r"(?:functions\.)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*", normalized):
             name = match.group(1)
             if name not in names:
                 continue
             remainder = normalized[match.end() :].lstrip()
             args: dict[str, Any] = {}
+            parsed_json = False
             if remainder.startswith("{"):
                 try:
                     loaded, _ = json_decoder.raw_decode(remainder)
                     if isinstance(loaded, dict):
                         args = loaded
+                        parsed_json = True
                 except json.JSONDecodeError:
-                    args = {}
+                    parsed_json = False
+            if required.get(name) and not parsed_json:
+                args = self._infer_missing_args(name)
+                if not args:
+                    continue
+            if not required.get(name).issubset(args):
+                continue
             parsed.append(_local_tool_call(name, args))
             return parsed
 
@@ -208,11 +241,15 @@ class AgentSession:
             args: dict[str, Any] = {}
             if raw_args:
                 try:
-                    loaded = json.loads(raw_args)
+                    loaded = json.loads(raw_args, strict=False)
                     if isinstance(loaded, dict):
                         args = loaded
                 except json.JSONDecodeError:
                     args = self._parse_loose_arguments(raw_args)
+            elif required.get(name):
+                args = self._infer_missing_args(name)
+            if required.get(name) and not required.get(name).issubset(args):
+                continue
             parsed.append(_local_tool_call(name, args))
             break
 
@@ -220,7 +257,7 @@ class AgentSession:
 
     def _parse_text_tool_json(self, text: str, names: set[str]) -> dict[str, Any] | None:
         try:
-            payload = json.loads(text)
+            payload = json.loads(text, strict=False)
         except json.JSONDecodeError:
             return None
         if not isinstance(payload, dict):
@@ -233,7 +270,7 @@ class AgentSession:
         args = payload.get("arguments") or payload.get("parameters") or {}
         if isinstance(args, str):
             try:
-                args = json.loads(args)
+                args = json.loads(args, strict=False)
             except json.JSONDecodeError:
                 args = {}
         if not isinstance(args, dict):
@@ -249,6 +286,51 @@ class AgentSession:
             args[key.strip()] = value.strip().strip("\"'")
         return args
 
+    def _looks_like_incomplete_tool_call(self, content: str) -> bool:
+        normalized = html.unescape(content)
+        names = "|".join(re.escape(tool["function"]["name"]) for tool in self.tools)
+        return bool(re.search(rf"(?:functions\.)?(?:{names})\s*:\s*$", normalized.strip()))
+
+    def _infer_missing_args(self, name: str) -> dict[str, Any]:
+        if name not in {"read_file", "write_python_launcher"}:
+            return {}
+        mentioned = self._mentioned_path_candidates()
+        for candidate in mentioned:
+            try:
+                path = self.tool_ctx.resolve_path(candidate)
+            except Exception:
+                continue
+            if path.is_file():
+                args = {"path": str(path.relative_to(self.tool_ctx.root))}
+                if name == "write_python_launcher":
+                    args["target"] = "app.py"
+                return args
+        basenames = [Path(candidate).name for candidate in mentioned if Path(candidate).name]
+        matches = []
+        for basename in basenames:
+            matches.extend(path for path in self.tool_ctx.root.rglob(basename) if path.is_file())
+        unique = sorted({path.resolve() for path in matches})
+        if len(unique) == 1:
+            args = {"path": str(unique[0].relative_to(self.tool_ctx.root))}
+            if name == "write_python_launcher":
+                args["target"] = "app.py"
+            return args
+        return {}
+
+    def _mentioned_path_candidates(self) -> list[str]:
+        text_parts = [
+            str(message.get("content") or "")
+            for message in self.messages
+            if message.get("role") == "user"
+        ]
+        text = "\n".join(text_parts[-3:])
+        candidates = []
+        for match in re.finditer(r"[\w./\\-]+\.[A-Za-z0-9_]+", text):
+            candidate = match.group(0).strip(".,:;\"'")
+            if candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
+
 
 def _local_tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -256,9 +338,6 @@ def _local_tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         "type": "function",
         "function": {"name": name, "arguments": json.dumps(args)},
     }
-
-    def clear(self) -> None:
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
 
 def parse_value(existing: Any, raw: str) -> Any:

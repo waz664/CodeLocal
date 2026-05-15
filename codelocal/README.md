@@ -65,6 +65,7 @@ The model can call tools to:
 - inspect file metadata
 - write files
 - create directories
+- create Python launcher scripts
 - replace exact text
 - search text
 - find files
