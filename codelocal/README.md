@@ -67,7 +67,7 @@ The model can call tools to:
 - create directories
 - create Python launcher scripts
 - create Python requirements files
-- create a simple Flask chat API
+- render reusable project templates such as `flask_chat_api` and `python_gitignore`
 - replace exact text
 - search text
 - find files

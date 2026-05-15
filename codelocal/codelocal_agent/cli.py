@@ -30,8 +30,9 @@ You are connected to a local model, so be disciplined:
 - Use write_python_launcher when asked to create or modify run.sh so it automatically chooses python3 or python.
 - Use write_python_requirements when asked to create requirements.txt or add Python dependencies such as Flask.
 - When asked for run.sh to install dependencies automatically, call write_python_launcher with install_requirements=true so it uses a local virtual environment instead of system pip.
-- Use write_flask_chat_api when asked to create a simple Flask chat API with /health and /chat.
+- Use render_template when asked to create files from a known template, including flask_chat_api and python_gitignore.
 - Do not claim you changed or tested something unless a tool result confirms it.
+- Do not print file contents unless you read them from a tool result in the current turn.
 - If a command fails, inspect the error and adjust once or twice; then explain the blocker.
 - Avoid repeated tool calls with the same arguments unless the state has changed.
 - When done, summarize changed files, commands run, and any unresolved risks.
@@ -43,7 +44,7 @@ Tool rules:
 - make_dir creates directories.
 - write_python_launcher creates executable Python run scripts.
 - write_python_requirements creates requirements.txt files.
-- write_flask_chat_api creates a complete simple Flask chat API.
+- render_template creates files from reusable templates.
 - run_command executes in the current working directory.
 - git_status is safe for checking repo state before and after edits.
 - change_dir changes only the agent working directory, not the user's shell.
@@ -297,11 +298,19 @@ class AgentSession:
         return bool(re.search(rf"(?:functions\.)?(?:{names})\s*:\s*$", normalized.strip()))
 
     def _infer_missing_args(self, name: str) -> dict[str, Any]:
-        if name not in {"read_file", "write_file", "write_python_launcher", "write_python_requirements", "write_flask_chat_api"}:
+        if name not in {"read_file", "write_file", "write_python_launcher", "write_python_requirements", "render_template"}:
             return {}
         user_text = self._recent_user_text().lower()
-        if name == "write_flask_chat_api" and "flask" in user_text and "chat" in user_text:
-            return {"path": "app.py", "host": "0.0.0.0", "port": 5000, "debug": True}
+        if name == "render_template" and "flask" in user_text and "chat" in user_text:
+            return {
+                "template": "flask_chat_api",
+                "path": "app.py",
+                "variables": {"host": "0.0.0.0", "port": 5000, "debug": True},
+            }
+        if name == "render_template" and ".gitignore" in user_text and "python" in user_text:
+            return {"template": "python_gitignore", "path": ".gitignore", "variables": {}}
+        if name == "write_file" and ".gitignore" in user_text and "python" in user_text:
+            return {}
         if name in {"write_file", "write_python_requirements"} and "requirements" in user_text:
             packages = self._mentioned_python_packages()
             if packages:

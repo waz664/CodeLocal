@@ -15,6 +15,22 @@ from .config import AgentConfig
 
 
 MAX_TOOL_OUTPUT = 12000
+TEMPLATES = {
+    "flask_chat_api": {
+        "description": "Simple Flask app with GET /health and POST /chat echo endpoint.",
+        "default_path": "app.py",
+        "variables": {
+            "host": "0.0.0.0",
+            "port": 5000,
+            "debug": True,
+        },
+    },
+    "python_gitignore": {
+        "description": "Basic Python .gitignore for virtual environments, caches, and local env files.",
+        "default_path": ".gitignore",
+        "variables": {},
+    },
+}
 TEXT_EXTENSIONS = {
     ".bat",
     ".c",
@@ -237,16 +253,16 @@ def tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "write_flask_chat_api",
-                "description": "Create or replace a simple Flask app.py with GET /health and POST /chat echo endpoint. Requires approval unless approval mode is auto.",
+                "name": "render_template",
+                "description": "Create or replace a file from a reusable project template. Available templates: flask_chat_api, python_gitignore. Requires approval unless approval mode is auto.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "default": "app.py"},
-                        "host": {"type": "string", "default": "0.0.0.0"},
-                        "port": {"type": "integer", "default": 5000},
-                        "debug": {"type": "boolean", "default": True},
+                        "template": {"type": "string"},
+                        "path": {"type": "string"},
+                        "variables": {"type": "object"},
                     },
+                    "required": ["template"],
                 },
             },
         },
@@ -359,9 +375,9 @@ def execute_tool(ctx: ToolContext, name: str, args: dict[str, Any]) -> ToolResul
         if name == "write_python_requirements":
             ctx.require_approval(name, args)
             return ToolResult(True, _write_python_requirements(ctx, args))
-        if name == "write_flask_chat_api":
+        if name == "render_template":
             ctx.require_approval(name, args)
-            return ToolResult(True, _write_flask_chat_api(ctx, args))
+            return ToolResult(True, _render_template(ctx, args))
         if name == "replace_text":
             ctx.require_approval(name, args)
             return ToolResult(True, _replace_text(ctx, args))
@@ -520,11 +536,34 @@ def _write_python_requirements(ctx: ToolContext, args: dict[str, Any]) -> str:
     return as_json({"written": str(path), "packages": normalized})
 
 
-def _write_flask_chat_api(ctx: ToolContext, args: dict[str, Any]) -> str:
-    path = ctx.resolve_path(args.get("path") or "app.py")
-    host = args.get("host") or "0.0.0.0"
-    port = int(args.get("port") or 5000)
-    debug = bool(args.get("debug", True))
+def _render_template(ctx: ToolContext, args: dict[str, Any]) -> str:
+    template_name = str(args.get("template") or "")
+    if template_name not in TEMPLATES:
+        raise ToolError(f"Unknown template: {template_name}. Available templates: {', '.join(sorted(TEMPLATES))}")
+    template = TEMPLATES[template_name]
+    path = ctx.resolve_path(args.get("path") or str(template["default_path"]))
+    variables = dict(template.get("variables", {}))
+    provided = args.get("variables") or {}
+    if isinstance(provided, dict):
+        variables.update(provided)
+    content = _template_content(template_name, variables)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return as_json({"written": str(path), "template": template_name, "variables": variables})
+
+
+def _template_content(template_name: str, variables: dict[str, Any]) -> str:
+    if template_name == "flask_chat_api":
+        host = variables.get("host") or "0.0.0.0"
+        port = int(variables.get("port") or 5000)
+        debug = bool(variables.get("debug", True))
+        return _flask_chat_api_template(host=host, port=port, debug=debug)
+    if template_name == "python_gitignore":
+        return _python_gitignore_template()
+    raise ToolError(f"Unknown template: {template_name}")
+
+
+def _flask_chat_api_template(host: str, port: int, debug: bool) -> str:
     content = (
         "from flask import Flask, jsonify, request\n"
         "\n"
@@ -552,9 +591,18 @@ def _write_flask_chat_api(ctx: ToolContext, args: dict[str, Any]) -> str:
         "if __name__ == \"__main__\":\n"
         f"    app.run(host={host!r}, port={port}, debug={debug!r})\n"
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return as_json({"written": str(path), "host": host, "port": port, "debug": debug})
+    return content
+
+
+def _python_gitignore_template() -> str:
+    return (
+        "__pycache__/\n"
+        "*.py[cod]\n"
+        ".venv/\n"
+        ".env\n"
+        ".pytest_cache/\n"
+        "*.egg-info/\n"
+    )
 
 
 def _replace_text(ctx: ToolContext, args: dict[str, Any]) -> str:
