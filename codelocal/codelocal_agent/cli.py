@@ -301,7 +301,7 @@ class AgentSession:
             except Exception:
                 continue
             if path.is_file():
-                args = {"path": str(path.relative_to(self.tool_ctx.root))}
+                args = {"path": self._tool_path_arg(path)}
                 if name == "write_python_launcher":
                     args["target"] = "app.py"
                 return args
@@ -311,11 +311,20 @@ class AgentSession:
             matches.extend(path for path in self.tool_ctx.root.rglob(basename) if path.is_file())
         unique = sorted({path.resolve() for path in matches})
         if len(unique) == 1:
-            args = {"path": str(unique[0].relative_to(self.tool_ctx.root))}
+            args = {"path": self._tool_path_arg(unique[0])}
             if name == "write_python_launcher":
                 args["target"] = "app.py"
             return args
         return {}
+
+    def _tool_path_arg(self, path: Path) -> str:
+        resolved = path.resolve()
+        for base in (self.tool_ctx.cwd, self.tool_ctx.root):
+            try:
+                return str(resolved.relative_to(base.resolve()))
+            except ValueError:
+                continue
+        return str(resolved)
 
     def _mentioned_path_candidates(self) -> list[str]:
         text_parts = [
