@@ -64,6 +64,7 @@ The model can call tools to:
 - read files
 - inspect file metadata
 - write files
+- create directories
 - replace exact text
 - search text
 - find files
@@ -71,9 +72,9 @@ The model can call tools to:
 - run shell commands
 - change the agent working directory
 
-By default, file writes, text replacements, and shell commands ask for approval.
-Use `/mode auto` only in a workspace you are comfortable letting the local model
-modify.
+By default, directory creation, file writes, text replacements, and shell
+commands ask for approval. Use `/mode auto` only in a workspace you are
+comfortable letting the local model modify.
 
 ## Notes
 

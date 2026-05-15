@@ -179,6 +179,18 @@ def tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "make_dir",
+                "description": "Create a directory, including parent directories if needed. Requires approval unless approval mode is auto.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "replace_text",
                 "description": "Replace text in a UTF-8 file. Fails if the old text is absent unless replace_all is true and count can be zero.",
                 "parameters": {
@@ -276,6 +288,9 @@ def execute_tool(ctx: ToolContext, name: str, args: dict[str, Any]) -> ToolResul
         if name == "write_file":
             ctx.require_approval(name, args)
             return ToolResult(True, _write_file(ctx, args))
+        if name == "make_dir":
+            ctx.require_approval(name, args)
+            return ToolResult(True, _make_dir(ctx, args))
         if name == "replace_text":
             ctx.require_approval(name, args)
             return ToolResult(True, _replace_text(ctx, args))
@@ -360,6 +375,12 @@ def _write_file(ctx: ToolContext, args: dict[str, Any]) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(args["content"], encoding="utf-8")
     return as_json({"written": str(path), "bytes": len(args["content"].encode("utf-8"))})
+
+
+def _make_dir(ctx: ToolContext, args: dict[str, Any]) -> str:
+    path = ctx.resolve_path(args["path"])
+    path.mkdir(parents=True, exist_ok=True)
+    return as_json({"created": str(path), "exists": path.is_dir()})
 
 
 def _replace_text(ctx: ToolContext, args: dict[str, Any]) -> str:
