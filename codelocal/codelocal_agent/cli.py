@@ -28,6 +28,8 @@ You are connected to a local model, so be disciplined:
 - For Linux tasks, use POSIX shell commands when possible.
 - For Linux Python launcher scripts, detect Python with `command -v python3 >/dev/null 2>&1` first, then `command -v python >/dev/null 2>&1`; store the chosen command in a variable and execute it.
 - Use write_python_launcher when asked to create or modify run.sh so it automatically chooses python3 or python.
+- Use write_python_requirements when asked to create requirements.txt or add Python dependencies such as Flask.
+- When asked for run.sh to install dependencies automatically, call write_python_launcher with install_requirements=true.
 - Do not claim you changed or tested something unless a tool result confirms it.
 - If a command fails, inspect the error and adjust once or twice; then explain the blocker.
 - Avoid repeated tool calls with the same arguments unless the state has changed.
@@ -39,6 +41,7 @@ Tool rules:
 - write_file and replace_text modify files.
 - make_dir creates directories.
 - write_python_launcher creates executable Python run scripts.
+- write_python_requirements creates requirements.txt files.
 - run_command executes in the current working directory.
 - git_status is safe for checking repo state before and after edits.
 - change_dir changes only the agent working directory, not the user's shell.
@@ -292,8 +295,21 @@ class AgentSession:
         return bool(re.search(rf"(?:functions\.)?(?:{names})\s*:\s*$", normalized.strip()))
 
     def _infer_missing_args(self, name: str) -> dict[str, Any]:
-        if name not in {"read_file", "write_python_launcher"}:
+        if name not in {"read_file", "write_file", "write_python_launcher", "write_python_requirements"}:
             return {}
+        user_text = self._recent_user_text().lower()
+        if name in {"write_file", "write_python_requirements"} and "requirements" in user_text:
+            packages = self._mentioned_python_packages()
+            if packages:
+                if name == "write_python_requirements":
+                    return {"path": "requirements.txt", "packages": packages}
+                return {"path": "requirements.txt", "content": "\n".join(packages) + "\n"}
+        if name == "write_python_launcher" and "run.sh" in user_text:
+            args = {"path": "run.sh", "target": "app.py"}
+            if "requirements" in user_text or "dependencies" in user_text or "install" in user_text:
+                args["install_requirements"] = True
+                args["requirements_path"] = "requirements.txt"
+            return args
         mentioned = self._mentioned_path_candidates()
         for candidate in mentioned:
             try:
@@ -304,6 +320,9 @@ class AgentSession:
                 args = {"path": self._tool_path_arg(path)}
                 if name == "write_python_launcher":
                     args["target"] = "app.py"
+                    if "requirements" in user_text or "dependencies" in user_text or "install" in user_text:
+                        args["install_requirements"] = True
+                        args["requirements_path"] = "requirements.txt"
                 return args
         basenames = [Path(candidate).name for candidate in mentioned if Path(candidate).name]
         matches = []
@@ -314,6 +333,9 @@ class AgentSession:
             args = {"path": self._tool_path_arg(unique[0])}
             if name == "write_python_launcher":
                 args["target"] = "app.py"
+                if "requirements" in user_text or "dependencies" in user_text or "install" in user_text:
+                    args["install_requirements"] = True
+                    args["requirements_path"] = "requirements.txt"
             return args
         return {}
 
@@ -327,18 +349,38 @@ class AgentSession:
         return str(resolved)
 
     def _mentioned_path_candidates(self) -> list[str]:
-        text_parts = [
-            str(message.get("content") or "")
-            for message in self.messages
-            if message.get("role") == "user"
-        ]
-        text = "\n".join(text_parts[-3:])
+        text = self._recent_user_text()
         candidates = []
         for match in re.finditer(r"[\w./\\-]+\.[A-Za-z0-9_]+", text):
             candidate = match.group(0).strip(".,:;\"'")
             if candidate not in candidates:
                 candidates.append(candidate)
         return candidates
+
+    def _recent_user_text(self) -> str:
+        text_parts = [
+            str(message.get("content") or "")
+            for message in self.messages
+            if message.get("role") == "user"
+        ]
+        return "\n".join(text_parts[-3:])
+
+    def _mentioned_python_packages(self) -> list[str]:
+        text = self._recent_user_text().lower()
+        packages = []
+        known = {
+            "flask": "flask",
+            "fastapi": "fastapi",
+            "django": "django",
+            "requests": "requests",
+            "numpy": "numpy",
+            "pandas": "pandas",
+            "pytest": "pytest",
+        }
+        for token, package in known.items():
+            if token in text and package not in packages:
+                packages.append(package)
+        return packages
 
 
 def _local_tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:

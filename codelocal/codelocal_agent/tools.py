@@ -202,14 +202,34 @@ def tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "write_python_launcher",
-                "description": "Create or replace a POSIX run script that selects python3 if available, otherwise python, then runs a target script. Requires approval unless approval mode is auto.",
+                "description": "Create or replace a POSIX run script that selects python3 if available, otherwise python, optionally installs requirements, then runs a target script. Requires approval unless approval mode is auto.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {"type": "string"},
                         "target": {"type": "string", "default": "app.py"},
+                        "install_requirements": {"type": "boolean", "default": False},
+                        "requirements_path": {"type": "string", "default": "requirements.txt"},
                     },
                     "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write_python_requirements",
+                "description": "Create or replace a Python requirements.txt file from a list of package names. Requires approval unless approval mode is auto.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "default": "requirements.txt"},
+                        "packages": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["packages"],
                 },
             },
         },
@@ -319,6 +339,9 @@ def execute_tool(ctx: ToolContext, name: str, args: dict[str, Any]) -> ToolResul
         if name == "write_python_launcher":
             ctx.require_approval(name, args)
             return ToolResult(True, _write_python_launcher(ctx, args))
+        if name == "write_python_requirements":
+            ctx.require_approval(name, args)
+            return ToolResult(True, _write_python_requirements(ctx, args))
         if name == "replace_text":
             ctx.require_approval(name, args)
             return ToolResult(True, _replace_text(ctx, args))
@@ -414,6 +437,16 @@ def _make_dir(ctx: ToolContext, args: dict[str, Any]) -> str:
 def _write_python_launcher(ctx: ToolContext, args: dict[str, Any]) -> str:
     path = ctx.resolve_path(args["path"])
     target = args.get("target") or "app.py"
+    requirements_path = args.get("requirements_path") or "requirements.txt"
+    install_requirements = bool(args.get("install_requirements", False))
+    install_block = ""
+    if install_requirements:
+        install_block = (
+            f"if [ -f {shlex.quote(str(requirements_path))} ]; then\n"
+            f"    \"$PYTHON_BIN\" -m pip install -r {shlex.quote(str(requirements_path))}\n"
+            "fi\n"
+            "\n"
+        )
     content = (
         "#!/usr/bin/env bash\n"
         "set -e\n"
@@ -427,12 +460,38 @@ def _write_python_launcher(ctx: ToolContext, args: dict[str, Any]) -> str:
         "    exit 1\n"
         "fi\n"
         "\n"
+        f"{install_block}"
         f"exec \"$PYTHON_BIN\" {shlex.quote(str(target))} \"$@\"\n"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     path.chmod(path.stat().st_mode | 0o755)
-    return as_json({"written": str(path), "target": target, "executable": True})
+    return as_json(
+        {
+            "written": str(path),
+            "target": target,
+            "install_requirements": install_requirements,
+            "requirements_path": requirements_path,
+            "executable": True,
+        }
+    )
+
+
+def _write_python_requirements(ctx: ToolContext, args: dict[str, Any]) -> str:
+    path = ctx.resolve_path(args.get("path") or "requirements.txt")
+    packages = args.get("packages") or []
+    if not isinstance(packages, list) or not packages:
+        raise ToolError("packages must be a non-empty list")
+    normalized = []
+    for package in packages:
+        package_text = str(package).strip()
+        if package_text:
+            normalized.append(package_text)
+    if not normalized:
+        raise ToolError("packages must contain at least one non-empty package")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(normalized) + "\n", encoding="utf-8")
+    return as_json({"written": str(path), "packages": normalized})
 
 
 def _replace_text(ctx: ToolContext, args: dict[str, Any]) -> str:
